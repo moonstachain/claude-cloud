@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>原力OS</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <strong class="brand">原力OS</strong>
+    <span id="verdict" class="verdict">…</span>
+    <input id="search" type="search" placeholder="搜索或提问  /" autocomplete="off">
+    <button id="theme" class="ghost" title="切换明暗 (t)">◐</button>
+    <span id="live" class="live" title="实时同步">●</span>
+  </header>
+  <nav id="tabs"></nav>
+  <main id="view"></main>
+  <aside id="drawer" hidden></aside>
+  <dialog id="prompt"><form method="dialog"><label id="prompt-label"></label><input id="prompt-input"><menu><button value="cancel" class="ghost">取消</button><button value="ok">确定</button></menu></form></dialog>
+  <div id="toast" role="status"></div>
+  <footer class="keys">j/k 选择 · a 批准 · r 否决 · d 推迟 · s 结算 · n 备注 · Enter 详情 · / 搜索 · 1-9 切换页</footer>
+</body>
+</html>

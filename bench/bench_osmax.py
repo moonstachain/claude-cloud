@@ -1,4 +1,4 @@
-"""The same hot paths measured on yuanli-os-max, for REVIEW.md §6.
+"""The same hot paths measured on yuanli-os-max, for docs/prototype/REVIEW-OSMAX.md §6.
 
     cd yuanli-os-max && uv sync --extra dev --locked
     uv run python /path/to/bench_osmax.py [repo_root]

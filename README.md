@@ -9,6 +9,8 @@
    - 已落地的内核重构：[yuanli-life/yuanli-os#81](https://github.com/yuanli-life/yuanli-os/pull/81)
 2. **3.0 参考原型**（`yuanli/`）：单机、只追加 JSONL 账本 + 内存折叠，验证"一个闭环、事件 + 折叠"的内核语义。它是参考实现，不是第二个生产内核（见 [架构 §12](docs/ARCHITECTURE.md#12-与-claude-cloud-里-30-原型的关系)）。原型自己的说明在 [`docs/prototype/`](docs/prototype/)。
 
+云端会话接入飞书 CLI 的设置见 [docs/FEISHU.md](docs/FEISHU.md)。
+
 ---
 
 ## 3.0 参考原型

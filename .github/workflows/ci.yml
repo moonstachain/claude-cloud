@@ -14,5 +14,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]" ruff
-      - run: ruff check --select F,E,W,B,I --line-length 200 yuanli tests bench
+      - run: ruff check --select F,E,W,B,I --line-length 200 yuanli tests bench scripts
       - run: pytest

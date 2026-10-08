@@ -2,7 +2,7 @@
 
 用飞书官方 CLI [`@larksuite/cli`](https://github.com/larksuite/cli)（命令 `lark-cli`），以**应用机器人**身份操作国内飞书：发消息、读写授权给应用的文档和多维表格。
 
-云端会话启动时，`.claude/hooks/session-start.sh` 会自动安装 `lark-cli`，并运行 `scripts/feishu_doctor.py` 检查连通性。检查结果会出现在会话开头，缺什么就提示补什么。
+云端会话启动时，`.claude/hooks/session-start.sh` 会自动安装 `lark-cli` 和它的 Agent Skills（`lark-im`、`lark-base` 等，相当于官方的 `npx @larksuite/cli@latest install`），并运行 `scripts/feishu_doctor.py` 检查连通性。检查结果会出现在会话开头，缺什么就提示补什么。
 
 ## 一次性设置
 

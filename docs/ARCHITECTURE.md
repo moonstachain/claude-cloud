@@ -1,6 +1,8 @@
 # 原力OS 目标架构：从第一性原理出发
 
 > 适用于 `yuanli-life/yuanli-os` 内核及健康、投研、创业、内容四个领域。现状诊断见 [REVIEW.md](REVIEW.md)，清理与迁移清单见 [MIGRATION.md](MIGRATION.md)。
+>
+> **规范版本已迁到内核仓**：[`yuanli-os/docs/architecture/TARGET.md`](https://github.com/yuanli-life/yuanli-os/pull/82)（加了决策状态表）。那边合并后，本文件只保留这个链接。决策在 Notion 页面"原力OS 目标架构：待拍板事项"里拍板。
 
 ## 1. 先问：这个板块到底在做什么
 

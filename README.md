@@ -8,7 +8,7 @@
 - **零运行时依赖**：只用 Python 3.11 标准库。热路径都在亚毫秒级（见 `docs/REVIEW.md` §6）。
 - **一屏，一键一决定**：`j/k` 移动，`a` 批准，`r` 否决，`d` 推迟，`s` 结算，`/` 提问。多端实时同步。
 
-文档：[全面审查](docs/REVIEW.md) · [架构](docs/ARCHITECTURE.md) · [迁移](docs/MIGRATION.md)
+文档：[全面审查](docs/REVIEW.md) · [架构](docs/ARCHITECTURE.md) · [迁移](docs/MIGRATION.md) · [接入飞书](docs/FEISHU.md)
 
 ## 快速开始
 

@@ -1,133 +1,181 @@
-# 原力OS 全面审查：由外到内，逐层诊断
+# 原力OS 板块审查：由外到内，逐层诊断
 
-> 审查对象：`yuanli-os-max`（OS 内核/工作台）、`yuanli-health-apple`（原力健康）、`yuanli-invest-runtime`（原力投研）、`yuanli-content-engine-os`（原力内容）、`yuanli-strategy-soul`（治理根节点）、`yuanli-brain-kernel`（大脑规格）。
-> `yuanli-os` / `yuanli-health-app` / `yuanli-venture-cockpit` 为空仓，原力创业目前只存在于 envelope 数据和 soul 文档里。
-> 方法：逐仓阅读代码 → 在本机跑通旧测试（os-max 92/92 通过）→ 用真实数据做基准 → 用新内核在同一数据上复现功能。所有结论都附文件位置或实测数字。
+> 日期：2026-10-08。对象是当前真正在跑的系统：
+> **内核** `yuanli-life/yuanli-os`（main@`a4ff383`，TypeScript + Netlify Functions + Postgres RLS，已有受邀用户、学员 MCP、卷卷试点）；
+> **领域** 原力创业（内核内 `packages/venture` + 项目工作台）、原力投研（内核内 Gold 工作台 + `moonstachain/yuanli-invest`）、原力健康（`yuanli-life/yuanli-health-app` + 母仓 `yuanli-health-apple`）、原力内容（`moonstachain/yuanli-content-engine-os`）。
+> `moonstachain/yuanli-venture-cockpit` 仍是空仓。
+>
+> 上一版审查（9/25，见 [`prototype/REVIEW-OSMAX.md`](prototype/REVIEW-OSMAX.md)）看的是 `yuanli-os-max` 等旧仓，把已归档的 `moonstachain/yuanli-os` 当成了"空仓"，**漏掉了 `yuanli-life/yuanli-os` 这个真正的内核**。本版补上。
+>
+> 方法：逐文件阅读 → 在本机复现完整测试（Node 24.14.1、内嵌 PostgreSQL 17、jsdom、MCP client）→ 在内核仓直接做等价重构，每一步都跑完整测试 → 领域仓做取证审查。结论都附 `文件:行号`（main@`a4ff383`）或实测数字。
+
+图例：✅ 已在 [yuanli-life/yuanli-os#81](https://github.com/yuanli-life/yuanli-os/pull/81) 完成 · 🟡 建议，需要你拍板（涉及产品、安全或线上配置）· ⏸ 暂缓（附原因）
 
 ---
 
 ## 0. 一句话结论
 
-**五个仓库在重复实现同一个闭环，而且每一次都用"再加一道门"来弥补"没有一个统一的真相源"。**
+**代码量的主体不是功能，而是"证明自己没做错"的机制。** 内核约 1.56 万行生产代码、1.83 万行测试，另有 122 个流程文件（2.16 万行回执、契约、计划、验收台账）。用户真正的动作只有一条闭环——*带着资料提出一件事 → AI 给建议 → 我判断 → 我接下一步 → 记录发生了什么 → 看结果 → 留下经验，下次复用*——但每一步都套了许可、同意、证据哈希、常量"未证明"标志和多层转发。
 
-- 同一个闭环被重写了 5 遍，名字各不相同：
-  - os-max：`fact → judgment → decision → action → verification → learning`
-  - 健康：`CTX → EVD → DEC → WPK → ACT → OUT → LRN`
-  - brain-kernel：`Experience → Knowledge Asset → Canon → Decision → Reality Feedback → Learning`
-  - 投研：`observation → receipt → learning`
-  - 内容：`Evidence → 24h / 72h / 7d → Learning`
-- 真相被拆进可变 JSON、JSONL 账本、outbox 目录、SQLite 读模型和各种 receipt 文件，只能靠文件锁、内容哈希、revision、If-Match、幂等键碰撞检测、truth-writer 环境变量去拼一致性。
-- 结果是：代码约 **21.4 万行 Python**、**3,400+ 个元文件（md/yaml/json）**、**133 个 CI workflow**。可用户每天真正要做的事只有一件：**看事实，拍板，事后结算。**
+最影响体验的三件事都不是代码风格问题，而是设计决策：
 
-新内核用 **1 个只追加账本 + 7 种事件 + 3 种角色**实现同一个闭环（Python 2143 行，含 5 个领域应用；UI 524 行；零运行时依赖），在同一份真实数据上，热路径快 20–18,000 倍，见第 6 节。
+1. **生成一次 AI 建议，要运营方先为这一个任务改环境变量。** 生产调用许可来自 `YUANLI_ALPHA_TASK_INVOCATION_PROFILE`（`task-generation-host.mts:114`），并且绑定单个 `taskId` 和输入哈希（`task-generation-policy.mts:96`）。
+2. **保存要先"开启任务保存"并确认范围**（`recording-preference.ts:18`）；管理员改了授权范围，用户要重新同意。一个记录型产品默认不记录。
+3. **健康摘要要第二次登录。** OS 已登录后，还要在浏览器里用健康账号邮箱验证码再登一次，只为显示最多 3 条睡眠提示（`health-controller.ts:46`，278 行）。
 
 ---
 
-## 1. 用户体验层：用户每天实际面对什么
+## 1. 产品与体验层
 
 | # | 发现 | 证据 | 处置 |
 |---|---|---|---|
-| U1 | **"已批准"是黑洞**：批准之后没有任何机制推动执行和结算 | 真实队列 58 项里：28 项 approved/close_ready，其中 **25 项已逾期**（最早 2026-07-11）；14 项 deferred；只有 11 项 done | 新内核的"进行中"一栏按到期日排序，逾期标红；领域可以注册执行器，批准后立即执行（§4 K3） |
-| U2 | **认知负荷**：一屏要同时理解 8 个固定视图 × 6 域 × M0–M6 × C1–C4 × G0/G1/G2 × S0–S3 × 5 种新鲜度 × 3 种置信度 × 3 种可见范围 | `docs/ARCHITECTURE-V2.md`、`osmax/models.py` 的枚举 | 压缩为：两栏（待拍板 / 进行中）+ 每个领域一页 + 校准 + 正典 |
-| U3 | **拍板要走两步**：UI 里签字只写 outbox，还要另起进程 `OSMAX_TRUTH_WRITER=1 osmax apply-rulings` 才生效 | `service.py:798` `apply_rulings` | 签字就是事件，一次写入立即生效 |
-| U4 | **推迟要填三个字段**（`due_at` + `defer_reason` + `resume_condition`），否则 422 | `models.py` `RulingRequest.validate_defer_contract` | 按 `d` 即可，默认 7 天，理由可选 |
-| U5 | **结算要手工判断**：Take 卡需要人工填 outcome，即使数据已经在库里 | `calibration.py`（446 行）| 提案可声明 `measure`，系统预填"建议结算：达成 / 未达成（实测 vs 目标）"，按 `s` 回车确认 |
-| U6 | **中文搜索基本失效**：分词只按空格和标点切分，"健康数据最近怎么样"被当成一个整词 | `service.py:597` `re_split` | 中日韩文字按二元组切分，"凭据什么时候轮换完"可以命中"八类凭据轮换" |
-| U7 | **首页信息密度被打分，但分数是写死的常量**：`density_audit.baseline/target/acceptance` 硬编码在 API 响应里 | `service.py:418` | 删除 |
-| U8 | **校准系统没有产出数据**：446 行 Take 状态机加 Brier 计算，目前 1 张 Take、0 个结算样本 | `data/calibration/takes.json` | 概率挂在任何一个决策上，结算即计分；按"人 / 机器"、按领域分组 |
+| U1 | AI 建议的生产调用逐任务授权，靠环境变量下发 | `task-generation-host.mts:114`、`task-generation-policy.mts:96` | 🟡 改为按主体的月度预算 + 日上限，存数据库，超额才拦（见 [架构 §6](ARCHITECTURE.md#6-授权一个主体列三种人签事件)） |
+| U2 | 默认不保存；先确认"保存范围"；授权范围一变就要重新同意（scope digest） | `recording-preference.ts:18`、`record-permit.mts:125` | 🟡 保存默认开启；同意改为一次性的服务条款确认 |
+| U3 | 一个任务的续接是 7 个独立表单、7 个保存按钮：反馈 / 下一步 / 承接 / 执行 / 结果 / 经验 / 经验使用 | `task-panel.ts` 全文（615 行） | 🟡 合并为一条时间线 + 一个"下一步"输入框，状态机不变 |
+| U4 | 文案大量免责：每次保存都附"本人报告，尚未独立核验，不能据此认定因果"等 | `task-panel.ts` 的 summary 文案 | 🟡 保留一处说明，删除逐条免责 |
+| U5 | 健康摘要需要第二套登录（Supabase 邮箱 OTP），并有跨标签页广播、会话纪元轮换等 443 行前端逻辑 | `health-controller.ts`、`health-panel.ts`、`health-summary.ts`、`health-config.ts` | 🟡 服务端用主体绑定代取摘要，浏览器只调 `/api/health/summary` |
+| U6 | 多租户产品的界面里写死了创始人名字：工时字段"其中 RAY 投入" | `project-panel.ts:69` | 🟡 改为"负责人投入"，或删字段 |
+| U7 | 新任务必须选 1–2 份已授权资料才能开始 | `task-v2.ts` `validateNewTask` | 🟡 允许 0 份资料先开始，资料可后补 |
+| U8 | 生产根路径之外还有 `?debug=1` 的 "G2 PRIVATE PREVIEW" 页面，把任务原样回显为 JSON | `main.ts`（旧） | ✅ 删除 |
 
-## 2. 仓库拓扑与法权层
-
-| # | 发现 | 证据 | 处置 |
-|---|---|---|---|
-| R1 | **273 个仓库**，其中大量是"投影 / 镜像 / 备份 / handoff module"。仓库描述里写的是法权声明（"PROJECTION of … Not SSOT"、"Not a second canon"、"P5 quarantine"），而不是它做什么 | GitHub 仓库描述 | 目标拓扑：1 个内核仓 + 少数资产仓（App、内容、方法论正文）；其余归档 |
-| R2 | **跨仓法权网**：`repo-contract.yaml` + `authority-ledgers.yaml` + `repository-enrollment-*` 的 r2 版本和 amendment，互相引用 | `yuanli-os-max/repo-contract.yaml`；soul `governance/` 38 项 | 只剩一个运行时之后，"谁是真相"这个问题本身就不存在了 |
-| R3 | **把仓库名硬编码进校验器**：配置文件必须等于代码里写死的仓库名和 issue 号，否则无法启动。这是配置对自身的同义反复 | `source_registry.py:16` `FORBIDDEN_ACTIVE_REFERENCES`、`:28` `REQUIRED_CURRENT_AUTHORITIES`、`:135` `"issues/448"` | 删除整个模块（186 行 + 12 个测试） |
-| R4 | **版本号写进文件名**：`r2/r3/r4/r5`、`v1..v12`、`V11A`，每一版都是新文件加新测试 | invest `evidence/*.r2..r5.json`；health `docs/` 48 份 v2–v12 文档 | 版本交给 git；每个对象只保留当前形态 |
-| R5 | **soul 仓治理元文件过载**：2,874 个文件里有 1,354 md + 710 yaml，另有 114 个 workflow | soul 仓 | 保留方法论正文（这是真正的资产），删除注册表、修正案、回执类治理文件 |
-
-## 3. 治理与流程层
+## 2. 界面层（Web）
 
 | # | 发现 | 证据 | 处置 |
 |---|---|---|---|
-| G1 | **G0/G1/G2 由字符串子串黑名单判定**，误伤大于保护：`report.execution_summary`（含 `exec`）和 `content.publisher_review`（含 `publish`）都被判为 G2 拒绝（实测） | `service.py:37` `G2_OPERATION_MARKERS` | 改为 3 种角色：只有 principal 能拍板、结算、裁决正典；执行器是仓库里经过审查的代码，不是字符串 |
-| G2 | **G2 批准了也永不执行**："只记录授权，不执行"。人已经看过参数并批准，系统仍拒绝执行，于是只能手工执行，然后被遗忘 | `apply_rulings` 结果 `decision_recorded_no_execution` | 批准本身就是闸门。有执行器就执行（Dify / n8n / 飞书 webhook），没有就进入"进行中"栏跟踪 |
-| G3 | **SDD 双轨**：spec-kit 四阶段 + superpowers 七阶段 + 宪法检查 + Complexity Tracking，再加 10 个 speckit skill（约 13 万字） | `.specify/`、`.claude/skills/speckit-*`、`docs/管理契约-superpowers映射.md` | 对个人系统是纯开销。保留两条：测试先行，PR 合并 |
-| G4 | **fail-closed 泛滥**：清单缺失、schema 不符、清单为空、外部检查器缺失，全部 fail-closed。"门"本身成了主要故障源 | `gates.py`（154 行 + 20 个测试） | 删除。唯一真正要守的门是"谁能写什么"，由 `policy.py` 一处实现 |
-| G5 | **哈希当信任**：envelope 自带 `content_hash` 自校验、receipt 带 sha256、安装器审计链（genesis 为 64 个 0）。数据本来就在 git 里，git 已经提供内容寻址 | `collectors.py:446`；内容引擎 `sha256` 出现 1,629 处 | 删除。账本进 git 就是审计 |
-| G6 | **安全扫描放在热路径上**：没有扫描回执时，`collect` 会触发 `git log -p --all` 全历史扫描 | `collectors.py:568` → `security.py:75` | 交给 CI 里的 gitleaks（已有）。运行时不扫描 |
-| G7 | **隐私靠事后正则**：公开导出之后，再用 email / 私网 IP / `¥` 金额 / `/Users/` 路径正则扫一遍 | `security.py` `PUBLIC_LEAK_PATTERNS` | 隐私按构造保证：每条记录自带 scope，默认 private；导出只序列化受众可见的记录 |
+| W1 | 任务工作台和项目工作台都把"开发用联合验收面板"整块挂进来当续接组件，再隐藏它的导出按钮、搬走它的状态行 | `task-workbench.ts:594-629`、`project-panel.ts:598` | 🟡 抽出独立的续接组件；`legacy-intake` 区域随 v1 退役一起删除 |
+| W2 | 同一份生成错误文案在两个面板各写一遍；同一个失权正则写了 7 处 | `task-workbench.ts:28`、`project-panel.ts:121` | ✅ 收敛到 `api-client.ts` |
+| W3 | 健康摘要手写闰年校验 | `health-summary.ts:20` | 🟡 随 U5 一起删除 |
+| W4 | 两套列表来源：目录 v2（游标分页）和旧列表（最多 50 条），按特性开关切换 | `task-workbench.ts` `restore()`、`project-panel.ts` `refresh()` | 🟡 目录 v2 稳定后删除旧列表分支 |
 
-## 4. 架构与数据层
+## 3. 接入面（HTTP / MCP / CLI）
 
 | # | 发现 | 证据 | 处置 |
 |---|---|---|---|
-| K1 | **没有单一真相源**：可变的 `decision-queue.json` + 只追加的 `events/rulings.jsonl` + `var/outbox/*.json` + SQLite 读模型 + `snapshots.jsonl` + `receipts/*.json` | os-max README "目录"表 | **一个只追加 JSONL 账本**。队列、回执、历史、追踪、校准都是从它折叠出来的视图 |
-| K2 | **四个并行状态机**：决策 6 态 × 执行 6 态 × 验证 5 态 × 结算 3 态，另有一个 5 态 Take 状态机 | `decision_lifecycle.py`、`calibration.py` | 一个生命周期：`open → approved / rejected / deferred → done`。执行和验证的证据以 `item.noted` 挂在同一条目上 |
-| K3 | **幂等和一致性手写两遍**：outbox 写入先在锁里逐字段比较 9 个字段，再在第二把锁里用反向条件再比一遍；另外还要 glob 扫描全部 outbox 检查同 revision | `service.py:621/653`（proposal）、`:704/736/737`（ruling） | 事件 id 即幂等键；`rev` 做乐观并发；账本 flock 串行化写入 |
-| K4 | **读模型每次请求都重建**：`current_brief()` 每个请求重新计算整页，还会重读注册表（含修正案合并、别名展开、全量校验）、判断配置和队列哈希；SSE 每 30 秒重算整页，只为推送数据源状态 | `app.py:77`、`service.py:237`、`app.py:298-307` | 内存折叠：每个事件 O(1) 更新，读取 O(1)；SSE 只在账本序号变化时推送 |
-| K5 | **单条记录查询是全表扫描**：`get_record` 先 `list_records()` 把整张表 JSON 反序列化，再在 Python 里过滤 | `store.py:174-176` | dict 查找，5 µs |
-| K6 | **采集串行，存在 N+1**：10 个来源依次执行（各自 3–12 s 超时）；战略项目对每个项目单独起一个 `gh api` 子进程 | `collectors.py:587`、`:407-436` | 线程池并发；来源失败降级为可见状态，不会阻塞其他来源 |
-| K7 | **同一 API 两套版本**：`/api/v1/proposals` 与 `/api/v2/proposals` 等价；`/v1/decisions/{id}/sign` 与 `/v2/decisions/{id}/rulings` 各有一套版本语义（revision / content-hash） | `app.py:198-296` | 一套路由，一张表 |
-| K8 | **外部依赖写死本机路径**：`~/AI Project/gbrain/src/cli.ts`，子进程超时 180 s | `service.py:454-473` | 可选的 `brain.py`：默认确定性检索；设置 `YUANLI_BRAIN=1` 后由 Claude 基于命中记录生成回答并带引用 |
+| S1 | "内核"请求只把输入加上 `authority_ceiling: "A1"`、`persisted: false`、`external_effect: false` 原样返回；A2–A4 一律抛错，而调用方只传 A0/A1 | `packages/kernel/src/index.ts:93` | ✅ 删除，内核只保留 `Principal` 类型 |
+| S2 | CLI 只打印上面的回显；"Web × CLI × MCP → One Kernel" 在字面上成立，但三端拿到的是同一个回显 | `cli/yuanli.ts` | ✅ 删除 |
+| S3 | MCP 的 `context.compile` / `doctor` / `capability.list` 同样是回显或静态列表 | `netlify/functions/mcp.mts`（旧 80–166 行） | ✅ 删除；MCP 只保留读真实记录的工具，工具发现走协议自带的 `tools/list` |
+| S4 | 预览专用的授权路由，"人工闸门"是任何人都能发送的请求头 | `source-grants.mts:21` `x-yuanli-human-gate: approved` | ✅ 删除（连同 `/api/context`、`/api/status`） |
+| S5 | 两套运行时配置命名空间 `YUANLI_JOINT_*` / `YUANLI_ALPHA_*`，再用改名垫片互相映射 | `task-runtime.mts:31`、`:95` | ⏸ 预览模式可能是 deploy preview 联合验收的依赖，删除前需确认 |
+| S6 | 两套任务 API：v1 `/api/tasks`（PATCH + `operation` 字段）和 v2 `/api/v2/tasks/*` | `task-record.mts`、`tasks-v2.mts` | ⏸ 仓库自己的退役闸门要求满 30 天（最早 10-25）且连续 7 天零流量（`check-legacy-retirement.mjs:17`）。到期后整体退役约 600 行 |
+| S7 | 请求体里出现 `principal`、`tenant_id` 等键就直接 400，而服务端本来就不读这些键 | `joint-http.mts:128` | 🟡 删除；身份只来自会话 |
+| S8 | 旧候选接口在模型调用前后各做一次来源授权和经验校验，而结果并不落库（保存时还会再验） | `joint-http.mts:254`、`:290` | 🟡 随 v1 退役删除 |
+| S9 | 特性开关 8 个以上：`YUANLI_ALPHA_ENABLED`、`YUANLI_RUNTIME_PROFILE`、`…_TASK_WRITE_ENABLED`、`YUANLI_TASK_FLOW_V2`、`YUANLI_CATALOG_V2_ENABLED`、`…_PROVIDER_ENABLED`、`VITE_HEALTH_SUMMARY_ENABLED`、`GOLD_RESEARCH_AI_ENABLED` | `task-runtime.mts`、`tasks-v2.mts` | 🟡 稳定后收敛为"运行环境 + 模型开关"两个 |
 
-## 5. 代码层（跨仓代表性样本）
+## 4. 应用层
 
-**os-max（10,411 行 Python）**
-- `source_registry.py`、`gates.py`、`security.py`、`nightly.py`、`calibration.py`、`decision_lifecycle.py`、`resolver.py` + `data/resolver-table.json`、14 份 `contracts/*.schema.json`：全部删除，或由新内核的 3 个文件吸收。
-- 心跳文件损坏时用正则"抢救"半行 JSON（`collectors.py:220`）→ 改为取最后一行完整的 JSON。
-- `mutated()` 未被任何代码调用（`source_registry.py:185`）。
-- 根目录下 5 份生成的 HTML、5 张"作战卡"md、`reports/*.xlsx` 都是产物，不应入库。
+| # | 发现 | 证据 | 处置 |
+|---|---|---|---|
+| A1 | 一个 Web 请求依次经过 `executeTaskRequest` → `executeTaskOperation` → 四个子应用之一 → `taskApplicationPorts()` 端口对象 → `PostgresTaskStore` 门面 → 记录类。三个子应用只做转发，四个端口里 `read` 重复三次，且只有一个实现 | `task-application-ports.mts:5`、`session-task-repository.mts:12`、`application/src/{ports,queries,task-request}.ts` | ✅ 合并为一个 `TaskApplication` 类 + 一个 `TaskRepository` 接口 |
+| A2 | `permit` 作为显式参数穿过每一层；会话版仓储收到后直接忽略（`_permit`） | `session-task-repository.mts` | ✅ 接口保留参数，会话版注明"每次重新解析许可" ｜ 🟡 目标是许可只存在于事务上下文 |
+| A3 | 常量"未证明"字段进入 API：`natural_reuse_proven:false`、`compounding_proven:false`、`attribution_proven:false`、`verification:"SELF_REPORTED_NOT_VERIFIED"`、`causalBenefitProven:false`，以及 handoff 报告的 `customerOutcomeProven:false` 等 | `task-read-batch.mts:386`、`work-progress.ts:44`、`project-delivery.ts:351`、`handoff.ts:14` | ✅ 删除（Web 与 MCP 均不读取）；死函数 `settleObservation`、`projectFingerprint` 一并删除 |
+| A4 | 每个响应都盖上 `capability`、`authority_ceiling`、`storage_effect`、`external_effect:false` 戳 | `joint-http.mts`、`task-mcp.mts` | 🟡 保留了响应形状以免影响现有客户端；v1 退役时一起去掉 |
 
-**内容引擎（41,670 行）**
-- 一个**本机 LaunchAgent 安装器有 2,348 行**：包含哈希链审计、事务日志回滚、单写者所有权接管事件。127 处 `raise`，104 处 `sha256`。而一个 LaunchAgent 本身只是一个 15 行的 plist。（`dify/scripts/install_content_engine_workbench_launch_agent.py`）
-- `build_campaign_dashboard.py` **5,005 行**，291 处 `raise`，239 处 `sha256`；它和另外 3 个同类构建器（workbench、experiment dashboard、capability runtime）合计 9,854 行，职责重叠。
-- 保留：`dify/` 工作流（作为执行器）、`series/` 内容资产、编辑战略文档（这些是内容本身）。
+## 5. 领域规则层
 
-**原力健康（119,155 行）**
-- `server/ingest_server.py` 1,580 行，其中约 200 个函数和校验只为接收手表事件。新内核里对应的是 `POST /api/facts` 加一个 agent token。
-- `verify_g0_exit_gate.py` 1,484 行、`verify_github_platform_gate.py` 1,740 行：用来验证"治理门是否合规"的代码，比功能代码还多。
-- README 首屏是法权状态（"G0 当前为 BLOCKED_ON_PLATFORM_ATTESTATION … PR #98 的自报 ACCEPTED 仍为语义无效"），而不是健康状况。
-- 保留：`apps/` 下的 iOS / Watch Swift 代码（真实资产），把上报地址改为 `/api/facts` 即可。
+`packages/decision-workflow`（决策→工作安排→执行→结果→经验）本身写得干净：纯函数投影、事件追加带幂等和版本检查。问题在外面：
 
-**原力投研（2,482 行，最健康的一个仓）**
-- 领域逻辑（管理人实体解析、CTA 回放）是真资产，保留为数据源适配器。
-- Supabase 函数把 `program = 'YMQ-GOLD2'`、`battle = 'G6-LIVE-SHADOW'` 写死在 SQL 里；边缘函数把客户端 ID 写死为 `YIOS-TG1-G1R-M4`。→ 改为 `POST /api/facts`。账本的事件时间戳就是"何时知道"，因此天然是 point-in-time 数据。
+| # | 发现 | 证据 | 处置 |
+|---|---|---|---|
+| D1 | 每读一个任务，都要沿"经验预载"链递归回溯最多 8 层，重新验证每个祖先任务的经验仍然有效 | `task-read-batch.mts:106` `WITH RECURSIVE` | 🟡 预载时记录经验版本即可；祖先被撤回时由事件标记下游，而不是每次读都重算 |
+| D2 | 预载令牌、草稿令牌各自做 HMAC 签名 + 5 分钟过期 + 任务文本哈希绑定 | `decision-workflow/src/task-record.ts` `issueDraftToken`、`learning.ts` `issuePreload` | 🟡 v2 流程已改为服务端状态；v1 退役后令牌随之删除 |
 
-**测试层**
-- os-max 的 92 个测试里，约 **63 个在测防御机制本身**（门 20、注册表 12、fleet 准入 16、模块地图 6、ViewSpec 防注入 4、nightly 3……），只有不到三分之一在测用户可感知的行为。
+## 6. 存储与授权层
 
-## 6. 性能层（同机、同数据实测）
+| # | 发现 | 证据 | 处置 |
+|---|---|---|---|
+| P1 | 同一份记录许可被校验 4 次：SQL 函数 `yuanli_lock_record_context` → JS 逐列复核数据库刚返回的行 → `assertRecordingIntent` → 每个存储方法里的 `assertRecordPermit`（含 `authority === "A2"` 字面量检查） | `task-session.mts:53`、`record-permit.mts:30`、`:125`、`kernel/src/task-record.ts:27` | ⏸ 预览模式的许可来自环境变量 JSON，`assertRecordPermit` 是它唯一的校验；先退役预览模式，再收敛为"数据库返回即可信" |
+| P2 | 主体是 4 元组（tenant、user、node、ecosystem），每条 SQL 过滤 4 列，比较用规范化 JSON；node/ecosystem 来自尚未使用的"联邦个人节点"设想 | `kernel/src/index.ts`、全部 `*-records.mts` | 🟡 迁移为单列 `principal_id` + RLS |
+| P3 | 所有业务对象挤在一张 `yuanli_objects` 表里，按 `object_type`（CTX/DEC/EVD/WPK/ACT/OUT/LRN）和 `payload->>'profile'` 区分，事件数组存在 JSON 里，版本号同时写在根和子记录上 | 迁移 `20260918131000_g1-kernel` | 🟡 目标是一张显式的 `events` 表 + `streams` 摘要表（[架构 §5](ARCHITECTURE.md#5-存储一张事件表一张流表)） |
+| P4 | 每个事务进入运行时角色后，再查一次 `pg_roles` 确认自己不是超级用户 | `scoped-db.mts:34` | ✅ 改为每个连接校验一次（`SET LOCAL ROLE` 仍每次执行；失败不缓存） |
+| P5 | 一次带身份的请求在开始业务查询前约需 7–8 次往返：BEGIN、SET ROLE、角色自检、set_config、锁身份绑定、再 set_config、锁记录许可（偏好写入还有一次 advisory lock）。目录接口实测 **15 次往返/请求**（与条目数无关） | `task-session.mts:43-53`、测试日志 `Alpha HTTP catalog … 15 database round trips` | ✅ 角色自检每连接一次；事务开头合成一条语句；`yuanli_enter_subject` 一次完成身份解析与作用域设置。目录 15 → 12 次（生产再少 1 次），v2 目录 13 → 10 次 ｜ 🟡 余下的大头在业务语句，见[架构 §5 与 §10](ARCHITECTURE.md#10-性能预算) |
+| P6 | 写路径（工作安排 / 执行 / 经验）三次复制同一段"加锁读视图 → 三项守卫 → 插入或更新子记录 → 推进根版本" | `continuation-records.mts` | ✅ 抽出两个私有方法 |
+| P7 | 5 份相同的"限长读取请求体/响应体"循环 | `joint-http`、`gold-handler`、`gold-runtime`、`mcp-oauth-http`、`providers/common/bounded-http` | ✅ 合并为 `readBounded()` |
 
-基准脚本：旧系统 `bench/bench_osmax.py`（在 os-max 的环境里运行），新系统 `bench/bench.py`。数据为 os-max 真实决策队列；5,000 项是把真实条目克隆扩容，与旧系统基准完全一致。新系统的账本里另外放了 2 万条投研事实，旧系统没有。
+## 7. 外部调用层（模型、检索）
 
-| 热路径 | 旧 · 58 项 | 新 · 58 项 | 旧 · 5,000 项 | 新 · 5,000 项 |
-|---|---:|---:|---:|---:|
-| 首页（整页 brief） | 5.81 ms | **0.25 ms** | 105 ms | **5.2 ms** |
-| 单条记录查询 | 1.37 ms | **0.004 ms** | 92 ms | **0.005 ms** |
-| 问答"今天只需我拍板什么" | 8.3 ms | **0.02 ms** | 198 ms | **0.19 ms** |
-| 自由文本检索 | 10.5 ms | **0.02 ms** | 303 ms | **0.52 ms** |
-| 冷启动 / 重建 | collect 164 ms（真实环境还要加网络超时和 `git log -p --all`）| 重放 2 万事件 120 ms | 838 ms | 重放 3.1 万事件 238 ms |
-| 写一次（含 fsync） | — | 0.25 ms | — | 0.27 ms |
+| # | 发现 | 证据 | 处置 |
+|---|---|---|---|
+| X1 | 调用许可要求 `tokenBudgetEvidence.sha256`、`cost.evidence.status: "VERIFIED_UPPER_BOUND"`、`includesRetrievalAndModel: true` 等字段；代码注释承认这些是"运营方断言，不是对远端定价/分词器文档的校验" | `task-generation-policy.mts:12`、`:36`、`:128` | 🟡 保留真实的数值上限（次数、金额、超时），删除无法验证的"证据"字段 |
+| X2 | 两套并行的生成宿主：生产用 `task-generation-host`，非生产用 `candidate-host`，各自实现预留、校验、回执 | `task-generation-host.mts`、`candidate-host.mts`、`candidate-pipeline.mts` | 🟡 合并为一个宿主，环境差异只体现在配置 |
+| X3 | Ollama `keep_alive=0`、WeKnora 前后元数据核对 | `providers/ollama`、`providers/weknora` | 保留：前者与留存承诺有关，后者能发现读取期间的来源变更 |
 
-旧系统的延迟随条目数线性增长（每次请求都要全表反序列化），新系统的查询路径与规模无关。
+## 8. 测试、CI 与流程文件
 
-## 7. 该保留的：原设计里正确的部分
+| # | 发现 | 证据 | 处置 |
+|---|---|---|---|
+| T1 | CI 闸门脚本先检查一串"证据文件"是否存在，再把 7 个测试文件映射成 identity/data/task 三个闸门字符串，写出带 `NOT_AUTHORIZED` 注释的回执 | `scripts/svc1-g0-acceptance.mjs:11` | ✅ 改为：测试环境齐备时任何测试被跳过即失败（跨仓 Gold 套件除外），CI 直接跑 `npm run test:full` |
+| T2 | 用测试去 grep 文档里的字句，例如断言 YAML 里写着 `rollback_seconds_observed: 18` | `tests/svc1-alpha-migration-manifest.test.ts:51` | 🟡 只保留"已应用迁移不可删除/改号"的结构检查 |
+| T3 | 结构警察式测试：断言某文件不存在、某文件不含某正则 | `tests/application-boundaries.test.ts` | 保留依赖方向检查；其余随重构调整 |
+| T4 | 122 个流程文件（2.16 万行）：`receipts/` 17、`runs/` 9、`evals/` 11、`contracts/` 20、`governance/` 4、`schemas/` 2、`docs/superpowers/` 8、`docs/architecture/evidence/`（单个 9,617 行 JSON）等 | 仓库根目录 | 🟡 批量删除被会话的安全策略拦截（它们是审计记录）。清单与命令见 [迁移 §2](MIGRATION.md#2-yuanli-os流程文件清单需要你执行或授权)，git 历史仍保留全部内容 |
+| T5 | 启动器要求 Node 版本恰好是 24.x 且 ≥24.14.1，否则拒绝运行 | `scripts/lib/enterprise-starter.mjs:110` | 🟡 放宽为 ≥22 |
+| T6 | 本地 `LANG=C` 时内嵌 PG 会初始化成 SQL_ASCII，`left(taskText,160)` 截断中文后插入 JSONB 报错 | `catalog-store.mts` | 🟡 测试脚本固定 `--encoding=UTF8`；生产不受影响 |
 
-这些不是过度防御，新内核全部保留，只是换成更简单的实现：
+---
 
-1. **证据优先**：每个提案携带 `evidence`，每条事实都带时间和来源。
-2. **人签不可代**：只有 principal 能拍板、结算、采纳正典。agent 只能观察、提议、备注（`policy.py` 中 `HUMAN_ONLY`）。
-3. **默认私密**：scope 默认 `private`，在读路径统一执行。
-4. **校准**：Brier 分数，并且现在区分人和机器。
-5. **读模型可重建**：内存状态可以随时从账本重放得到。
-6. **现实回灌**：结算 → 校准 → 正典候选 → 人采纳。
+## 9. 领域仓
 
-## 8. 附录：复现旧系统基准
+### 原力创业（`packages/venture` + 项目工作台）
 
-```bash
-cd yuanli-os-max && uv sync --extra dev --locked && uv run pytest -q     # 92 passed
-uv run python ../claude-cloud/bench/bench_osmax.py .                      # 旧系统
-cd ../claude-cloud && python bench/bench.py ../yuanli-os-max 58           # 新系统，真实队列
-python bench/bench.py ../yuanli-os-max 5000                               # 新系统，5,000 项
-```
+- 真实可用：项目资料包 → AI 报价缺项检查 → 本人判断（价格/成本/工时/交期影响）→ 复核与工时 → 续接。规则在 `project-delivery.ts`，写得清楚。
+- 问题：`handoff.ts` 的五阶段衔接检查器没有界面或接口入口，只有测试和一份运营说明（由运营者在脚本里导入调用）；`yuanli-venture-cockpit` 仍是空仓。🟡 建议删除空仓；衔接检查器等有入口再接。
+
+### 原力投研（Gold 工作台 + `yuanli-invest`）
+
+- 内核侧：Gold 工作台通过服务端调用独立的研究运行时（`gold-handler.mts`、`gold-runtime.mts`），边界清楚；判断带方向、起止日、中性区间，到期验真。这部分是全板块最接近"闭环"的设计。
+- `yuanli-invest`：933 个文件里 238 个文档、220 个事件、220 个 canon 文件，**34 个 `validate_*.py`**，其中多个把文档的 git blob SHA 写死成"不可变哨兵"（例如 `scripts/validate_yios0_canonical_definition.py:22` `IMMUTABLE_CHILD_SENTINELS`）。真正跑研究的是 `ymq_gold2_*` 几个脚本。🟡 研究逻辑（编译、回放、学习）保留为投研域的数据源；校验器与哨兵删除，版本交给 git。
+
+### 原力健康（`yuanli-health-app` + `yuanli-health-apple`）
+
+- Web 端只有 4.9k 行，已做过分层整理；但 **"确认意向"只保存在当前页面，刷新即清除**（README 明示），周计划 → 执行 → 复盘 → 下周调整的闭环尚未形成。
+- 治理负担：`governance/` 19 个文件（settlement、reality proof、authority pin、upstream source lock），`scripts/verify_governance.py` 要求 12 个上游来源按 SHA 锁定；`contract1_authority_gate.py`（411 行）与 `contract234_reality_loop.py`（316 行）是一次性证明工具。
+- 🟡 健康事实（睡眠、HRV）由 iOS/Watch 推入内核的事实接口；"意向/计划/执行/复盘"复用内核的任务闭环，健康只提供规则和临床升级判断。
+
+### 原力内容（`yuanli-content-engine-os`）
+
+- 内容本身是资产：`series/`、编辑战略、160 题选题库。
+- 代码 4.5 万行，主要是"回执治理"：
+  - `install_content_engine_workbench_launch_agent.py` **2,348 行、65 个函数**，用于安装一个本机 LaunchAgent，内含事务日志、所有权审计哈希链（创世块为 64 个 0）、单写者接管、原子目录切换与中断事务恢复。一个 LaunchAgent 本身是十几行 plist。
+  - `build_campaign_dashboard.py` **5,003 行**，其中 530 行含 `raise` 或 `sha256`；和另外三个构建器（工作台、实验看板、能力运行时）合计约 9,900 行，职责重叠。
+  - `artifacts/receipts/` 与 `artifacts/public/` 把生成物提交进仓库。
+- 🟡 内容域进入内核后：选题是任务、发布是批准后的执行器（Dify / 小鹅通），24h/72h/7d 阅读数据是事实，看板是查询而不是提交进仓库的 JSON。LaunchAgent 安装器替换为 plist + `launchctl bootstrap`。这些依赖 macOS 和真实发布渠道，本会话无法端到端验证，所以只给方案、没有直接改。
+
+---
+
+## 10. 该保留的：原设计里正确的部分
+
+1. **人签不可代。** AI 只提建议；判断、承接、结算、经验审核必须是本人。
+2. **AI 原文与人的判断分开保存。** v2 的 `proposal` 与 `decision` 分离是对的。
+3. **证据可追溯。** 每条建议引用来源 ID、版本和定位。
+4. **幂等与乐观并发。** 幂等键 + 期望版本，重试不重写、并发不覆盖。
+5. **RLS 隔离与运行时降权。** 数据库层按主体隔离，应用连接不能绕过 RLS。
+6. **外部调用后的来源复查。** 模型生成期间资料可能被撤权，提交前再查一次。
+7. **到期验真。** 投研的"同端点验真"把判断变成可结算的样本。
+
+## 11. 已完成的重构（PR #81）
+
+8 个提交，每个都单独跑过完整测试：
+
+| 提交 | 生产代码净增减（行） | 说明 |
+|---|---|---|
+| 删除回显内核、CLI、预览路由与预览落地页 | −705 | S1–S4、U8 |
+| 用"跳过即失败"替换验收回执闸门 | −167 | T1 |
+| 应用层端口压平 | −151 | A1 |
+| 共享 `readBounded()` | −30 | P7 |
+| 角色自检每连接一次 | +5 | P4（每请求少一次往返） |
+| 删除常量"未证明"字段与死函数 | −40 | A3 |
+| UI 错误文案与失权判断去重 | +7 | W2 |
+| 续接记录写路径抽取 | −14 | P6 |
+
+合计：生产代码 −1,738 / +657 行；测试 −387 / +75 行（删除的测试都只覆盖被删除的代码）。
+
+**验证**：`npm run build` 通过；`npm run test:full` **714 通过 / 3 跳过**（跨仓 Gold 套件，需另外两个仓库的检出）。重构前同环境基线为 767 通过 / 3 跳过，净减少的 53 个测试全部属于被删除的功能：回显内核 5、三端等价 3、预览路由 29、能力清单 1、旧闸门脚本 15、`settleObservation` 1，另新增 1 个角色自检测试。
+
+## 12. 需要你决定的事项（按收益排序）
+
+1. **模型调用改为按主体预算**（U1、X1、X2）。这是目前最大的体验阻塞。
+2. **保存默认开启**（U2），去掉范围摘要同意。
+3. **健康摘要改为服务端代取**（U5），删除浏览器第二次登录。
+4. **10 月 25 日后退役 v1**（S6、S8、W1、D2、A4），按仓库自己的流量闸门执行，约 −600 行。
+5. **确认预览/联合模式是否还在用**（S5、P1），不用则删除，许可校验随之收敛为一处。
+6. **授权批量删除流程文件**（T4），一条命令，见迁移清单。
+7. **主体单列化与事件表**（P2、P3、P5），按 [架构 §11](ARCHITECTURE.md#11-迁移路径每一步都可回退) 分阶段做。

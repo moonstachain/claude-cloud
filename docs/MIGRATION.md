@@ -48,7 +48,7 @@ git rm docs/architecture/2026-09-2*.md \
 | 4 | 10-25 之后按流量闸门退役 v1：`/api/tasks/candidate`、`learning-preload`、签名保存、草稿/预载令牌、`legacy-intake` 面板、响应戳 | 否（届时已零流量） | −600 行 |
 | 5 | 确认预览/联合模式后删除：`YUANLI_JOINT_*`、预览 Bearer、`principal.mts`、`auth.mts`；许可校验收敛为数据库一处 | 仅影响 deploy preview | −300 行 |
 | 6 | 续接组件独立：从 `task-panel.ts` 拆出时间线组件，任务与项目工作台直接使用 | 是：7 个表单合为 1 条时间线 | −300 行 |
-| 7 | `yuanli_begin(subject)`：一次调用完成身份解析与作用域设置 | 否 | 每请求少 3 次往返 |
+| 7 | ✅ 已在 [#81](https://github.com/yuanli-life/yuanli-os/pull/81) 完成：事务开头合成一条语句 + `yuanli_enter_subject` 一次完成身份解析与作用域设置 | 否（新增一个函数的迁移） | 每请求少 3 次往返（实测） |
 | 8 | 事件表双写与回填（[架构 §11](ARCHITECTURE.md#11-迁移路径每一步都可回退) 阶段 2–5） | 分阶段，开关控制 | 存储层预计 −1,000 行 |
 
 小项：`project-panel.ts:69` 的"其中 RAY 投入"改为通用字段；启动器的 Node 版本要求放宽到 ≥22；测试脚本初始化内嵌 PG 时固定 UTF8 编码。

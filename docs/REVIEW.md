@@ -87,7 +87,7 @@
 | P2 | 主体是 4 元组（tenant、user、node、ecosystem），每条 SQL 过滤 4 列，比较用规范化 JSON；node/ecosystem 来自尚未使用的"联邦个人节点"设想 | `kernel/src/index.ts`、全部 `*-records.mts` | 🟡 迁移为单列 `principal_id` + RLS |
 | P3 | 所有业务对象挤在一张 `yuanli_objects` 表里，按 `object_type`（CTX/DEC/EVD/WPK/ACT/OUT/LRN）和 `payload->>'profile'` 区分，事件数组存在 JSON 里，版本号同时写在根和子记录上 | 迁移 `20260918131000_g1-kernel` | 🟡 目标是一张显式的 `events` 表 + `streams` 摘要表（[架构 §5](ARCHITECTURE.md#5-存储一张事件表一张流表)） |
 | P4 | 每个事务进入运行时角色后，再查一次 `pg_roles` 确认自己不是超级用户 | `scoped-db.mts:34` | ✅ 改为每个连接校验一次（`SET LOCAL ROLE` 仍每次执行；失败不缓存） |
-| P5 | 一次带身份的请求在开始业务查询前约需 7–8 次往返：BEGIN、SET ROLE、角色自检、set_config、锁身份绑定、再 set_config、锁记录许可（偏好写入还有一次 advisory lock）。目录接口实测 **15 次往返/请求**（与条目数无关） | `task-session.mts:43-53`、测试日志 `Alpha HTTP catalog … 15 database round trips` | ✅ 角色自检去掉一次 ｜ 🟡 用一个 `yuanli_begin(subject)` 函数一次完成身份解析与作用域设置，目标 ≤4 次 |
+| P5 | 一次带身份的请求在开始业务查询前约需 7–8 次往返：BEGIN、SET ROLE、角色自检、set_config、锁身份绑定、再 set_config、锁记录许可（偏好写入还有一次 advisory lock）。目录接口实测 **15 次往返/请求**（与条目数无关） | `task-session.mts:43-53`、测试日志 `Alpha HTTP catalog … 15 database round trips` | ✅ 角色自检每连接一次；事务开头合成一条语句；`yuanli_enter_subject` 一次完成身份解析与作用域设置。目录 15 → 12 次（生产再少 1 次），v2 目录 13 → 10 次 ｜ 🟡 余下的大头在业务语句，见[架构 §5 与 §10](ARCHITECTURE.md#10-性能预算) |
 | P6 | 写路径（工作安排 / 执行 / 经验）三次复制同一段"加锁读视图 → 三项守卫 → 插入或更新子记录 → 推进根版本" | `continuation-records.mts` | ✅ 抽出两个私有方法 |
 | P7 | 5 份相同的"限长读取请求体/响应体"循环 | `joint-http`、`gold-handler`、`gold-runtime`、`mcp-oauth-http`、`providers/common/bounded-http` | ✅ 合并为 `readBounded()` |
 
